@@ -64,9 +64,10 @@
                 setSelectedSolutionIdx(null);
             }, [inputValue, targetC]);
 
+            // 方案設定：489 方案為180C (基礎90C + 免費90C), 786 方案為290C (基礎150C + 免費140C)
             const offers = [
                 { id: 'offerA', name: '489 方案', time: '全日限定', startTime: 0, endTime: 24, twd: 489, totalC: 180, baseC: 90, freeC: 90 },
-                { id: 'offerB', name: '786 方案', time: '20:00 - 21:59', startTime: 20, endTime: 22, twd: 786, totalC: 290, baseC: 145, freeC: 145 }
+                { id: 'offerB', name: '786 方案', time: '20:00 - 21:59', startTime: 20, endTime: 22, twd: 786, totalC: 290, baseC: 150, freeC: 140 }
             ];
 
             const isCurrentlyClickable = (offer) => {
