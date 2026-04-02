@@ -76,7 +76,7 @@
                 const isAvailableNow = isCurrentlyClickable(o);
                 const isExpired = !isNotExpiredYet(o);
                 const costPerC = currency === 'HKD' ? hkdCost / o.totalC : o.twd / o.totalC;
-                const hkdPerC = hkdCost / o.totalC; // 固定計算港幣單價用於顯示
+                const hkdPerC = hkdCost / o.totalC;
                 
                 return { ...o, hkdCost, isAvailableNow, isExpired, costPerC, hkdPerC };
             }), [currency, currentTime, exchangeRate]);
