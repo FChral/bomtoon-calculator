@@ -14,7 +14,7 @@
     <!-- 引入 Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght=400;700;900&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
         .transition-all-custom { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
         @keyframes bounce-subtle {
@@ -46,6 +46,9 @@
             const [targetC, setTargetC] = useState('');
             const [selectedSolutionIdx, setSelectedSolutionIdx] = useState(null);
             
+            // 活動類型切換：'normal' (489+786) 或 'special' (666)
+            const [promoType, setPromoType] = useState('normal');
+
             const getTaiwanTime = () => {
                 const now = new Date();
                 const tzString = now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' });
@@ -55,9 +58,9 @@
             const [currentTime, setCurrentTime] = useState(getTaiwanTime());
             const [activeTask, setActiveTask] = useState(null);
 
-            // 優儲生效日期設定
-            const promotionDates = ["2026-04-02"]; // 已知日期
-            const nextPromotionDate = "2026-05-01"; // 下次未定，抓到後可填入如 "2026-05-01"
+            // 優儲生效日期設定（包含今天 2026-06-02，提供測試功能）
+            const promotionDates = ["2026-04-02", "2026-06-02"]; // 已知日期
+            const nextPromotionDate = "2026-07-01"; 
 
             const isPromotionDay = useMemo(() => {
                 const y = currentTime.getFullYear();
@@ -72,17 +75,36 @@
                 return () => clearInterval(timer);
             }, []);
 
+            // 切換活動類型、輸入金額或目標點數時，自動重置選擇的子方案與進行中的任務，防止跨方案衝突
             useEffect(() => {
                 setSelectedSolutionIdx(null);
-            }, [inputValue, targetC]);
+            }, [inputValue, targetC, promoType]);
 
-            const offers = [
-                { id: 'offerA', name: '489 方案', time: '全日限定', startTime: 0, endTime: 24, twd: 489, totalC: 180, baseC: 90, freeC: 90 },
-                { id: 'offerB', name: '786 方案', time: '20:00 - 21:59', startTime: 20, endTime: 22, twd: 786, totalC: 290, baseC: 150, freeC: 140 }
-            ];
+            useEffect(() => {
+                setActiveTask(null);
+            }, [promoType]);
+
+            // 所有方案定義（489/786 與 666 在數據源頭進行完全的組別隔離）
+            const allOffers = useMemo(() => ({
+                normal: [
+                    { id: 'offerA', name: '489 方案', time: '全日限定', startTime: 0, endTime: 24, twd: 489, totalC: 180, baseC: 90, freeC: 90 },
+                    { id: 'offerB', name: '786 方案', time: '20:00 - 21:59', startTime: 20, endTime: 22, twd: 786, totalC: 290, baseC: 150, freeC: 140 }
+                ],
+                special: [
+                    { id: 'offerC', name: '666 方案', time: '18:00 - 23:59', startTime: 18, endTime: 24, twd: 666, totalC: 246, baseC: 123, freeC: 123 }
+                ]
+            }), []);
+
+            // 根據當前選擇的活動類型獲取方案，確保計算與顯示完全與另一組無關
+            const currentOffers = useMemo(() => allOffers[promoType], [promoType, allOffers]);
 
             const isCurrentlyClickable = (offer) => {
                 if (!isPromotionDay) return false;
+                
+                // 額外驗證：點擊的方案必須屬於當前生效的活動類型
+                const isBelongingToActivePromo = currentOffers.some(o => o.id === offer.id);
+                if (!isBelongingToActivePromo) return false;
+
                 const hours = currentTime.getHours();
                 const minutes = currentTime.getMinutes();
                 const timeInDecimal = hours + minutes / 60;
@@ -90,84 +112,94 @@
             };
 
             const isNotExpiredYet = (offer) => {
-                // 如果不是活動當天，視為「未開始」而非「已過期」，讓計算機能計算但按鈕鎖定
                 if (!isPromotionDay) return true; 
                 const hours = currentTime.getHours();
                 const minutes = currentTime.getMinutes();
                 return (hours + minutes / 60) < offer.endTime;
             };
 
-            const calculableOffers = useMemo(() => offers, []); // 永遠可計算
-
-            const offerStats = useMemo(() => offers.map(o => {
+            const offerStats = useMemo(() => currentOffers.map(o => {
                 const hkdCost = o.twd / exchangeRate;
                 const isAvailableNow = isCurrentlyClickable(o);
                 const isExpired = isPromotionDay && !isNotExpiredYet(o);
                 const costPerC = currency === 'HKD' ? (hkdCost / o.totalC) : (o.twd / o.totalC);
                 return { ...o, hkdCost, isAvailableNow, isExpired, costPerC };
-            }), [currency, currentTime, exchangeRate, isPromotionDay]);
+            }), [currency, currentTime, exchangeRate, isPromotionDay, currentOffers]);
 
+            // 找出當前活動類型中最優惠的單一方案
             const bestOffer = useMemo(() => {
                 return [...offerStats].sort((a, b) => a.costPerC - b.costPerC)[0];
             }, [offerStats]);
 
+            // 嚴格單一方案計算邏輯（不進行任何跨方案、跨組別的混搭）
             const calculateAllResults = (mode, val) => {
                 if (!val || val <= 0) return null;
-                const active = offers;
-                let best = { totalC: 0, costTWD: 0, items: {}, title: "推薦搭配" };
-                const flash = active.find(o => o.id === 'offerB');
-                const normal = active.find(o => o.id === 'offerA');
                 const budgetTWD = currency === 'HKD' ? val * exchangeRate : val;
 
-                if (mode === 'budget') {
-                    const maxF = flash ? Math.floor(budgetTWD / flash.twd) : 0;
-                    for (let f = 0; f <= maxF; f++) {
-                        let rem = budgetTWD - (f * (flash?.twd || 0));
-                        let n = normal ? Math.floor(rem / normal.twd) : 0;
-                        const curC = (f * (flash?.totalC || 0)) + (n * (normal?.totalC || 0));
-                        const curTWD = (f * (flash?.twd || 0)) + (n * (normal?.twd || 0));
-                        if (curC > best.totalC) best = { totalC: curC, costTWD: curTWD, items: { [flash?.id]: f, [normal?.id]: n }, title: "最佳搭配" };
+                // 僅使用目前已過濾的「活動方案」(offerStats) 進行個別計算
+                const alternatives = offerStats.map(o => {
+                    let count = 0;
+                    if (mode === 'budget') {
+                        count = Math.floor(budgetTWD / o.twd);
+                    } else {
+                        count = Math.ceil(val / o.totalC);
                     }
-                } else {
-                    let minTWD = Infinity;
-                    const maxF = flash ? Math.ceil(val / flash.totalC) : 0;
-                    const maxN = normal ? Math.ceil(val / (normal?.totalC || 1)) : 0;
-                    for (let f = 0; f <= maxF; f++) {
-                        for (let n = 0; n <= maxN; n++) {
-                            const curC = (f * (flash?.totalC || 0)) + (n * (normal?.totalC || 0));
-                            const curTWD = (f * (flash?.twd || 0)) + (n * (normal?.twd || 0));
-                            if (curC >= val && curTWD < minTWD) {
-                                minTWD = curTWD;
-                                best = { totalC: curC, costTWD: curTWD, items: { [flash?.id]: f, [normal?.id]: n }, title: "最省搭配" };
-                            }
-                        }
-                    }
-                }
 
-                best.actualCostHKD = best.costTWD / exchangeRate;
-                best.avgPrice = currency === 'HKD' ? (best.actualCostHKD / best.totalC) : (best.costTWD / best.totalC);
-                best.itemList = Object.entries(best.items).filter(([_, c]) => c > 0).map(([id, c]) => ({ count: c, name: offers.find(off => off.id === id).name, id }));
-
-                const singleCompare = offers.map(o => {
-                    let count = mode === 'budget' ? Math.floor(budgetTWD / o.twd) : Math.ceil(val / o.totalC);
                     const totalC = count * o.totalC;
                     const costTWD = count * o.twd;
                     const actualCostHKD = costTWD / exchangeRate;
-                    const diff = currency === 'HKD' ? (actualCostHKD - best.actualCostHKD) : (costTWD - best.costTWD);
-                    return { 
-                        title: `單儲 ${o.name}`, name: o.name, count, totalC, costTWD, actualCostHKD, diff,
-                        avgPrice: currency === 'HKD' ? (actualCostHKD / totalC) : (costTWD / totalC),
+                    const avgPrice = currency === 'HKD' ? (actualCostHKD / totalC) : (costTWD / totalC);
+
+                    return {
+                        id: o.id,
+                        title: `單儲 ${o.name}`,
+                        name: o.name,
+                        count,
+                        totalC,
+                        costTWD,
+                        actualCostHKD,
+                        avgPrice,
                         itemList: [{ count, name: o.name, id: o.id }]
                     };
-                });
-                return { best, alternatives: singleCompare };
+                }).filter(res => res.count > 0); // 過濾掉不符預算或不需要的方案
+
+                if (alternatives.length === 0) return null;
+
+                // 根據模式推薦最佳單一方案
+                let bestIdx = 0;
+                if (mode === 'budget') {
+                    // 預算模式：推薦能拿到最多點數的單一方案
+                    let maxC = -1;
+                    alternatives.forEach((alt, idx) => {
+                        if (alt.totalC > maxC) {
+                            maxC = alt.totalC;
+                            bestIdx = idx;
+                        }
+                    });
+                } else {
+                    // 目標點數模式：推薦花費最少的單一方案
+                    let minCost = Infinity;
+                    alternatives.forEach((alt, idx) => {
+                        if (alt.costTWD < minCost) {
+                            minCost = alt.costTWD;
+                            bestIdx = idx;
+                        }
+                    });
+                }
+
+                const best = {
+                    ...alternatives[bestIdx],
+                    title: mode === 'budget' ? "最佳推薦 (單一方案)" : "最省推薦 (單一方案)"
+                };
+
+                return { best, alternatives };
             };
 
             const results = useMemo(() => {
                 if (inputValue) return calculateAllResults('budget', inputValue);
                 if (targetC) return calculateAllResults('target', targetC);
                 return null;
-            }, [inputValue, targetC, currency, exchangeRate]);
+            }, [inputValue, targetC, currency, exchangeRate, offerStats]);
 
             const currentDisplaySolution = useMemo(() => {
                 if (!results) return null;
@@ -177,7 +209,7 @@
             const startTask = (res) => {
                 if (!isPromotionDay) return;
                 const items = res.itemList.map(it => {
-                    const o = offers.find(off => off.id === it.id);
+                    const o = currentOffers.find(off => off.id === it.id);
                     return { ...it, total: it.count, remaining: it.count, perUnitC: o.totalC, startTime: o.startTime, endTime: o.endTime };
                 });
                 setActiveTask({ items, totalGoalC: res.totalC });
@@ -192,7 +224,6 @@
             };
 
             const currentTotalC = useMemo(() => activeTask?.items.reduce((acc, it) => acc + (it.total - it.remaining) * it.perUnitC, 0) || 0, [activeTask]);
-            const isAllCompleted = useMemo(() => activeTask?.items.length > 0 && activeTask.items.every(it => it.remaining === 0), [activeTask]);
 
             const MainResultCard = ({ res }) => {
                 if (!res) return null;
@@ -212,7 +243,7 @@
                                 </div>
                                 <div className="mt-1 flex flex-col gap-1">
                                     <div className="px-2 py-0.5 bg-pink-100/50 border border-pink-200 rounded text-[10px] font-bold text-pink-500 inline-block">
-                                        均價：{currency} {res.avgPrice.toFixed(3)}/C
+                                        均價：{currency} {res.avgPrice ? res.avgPrice.toFixed(3) : "0.000"}/C
                                     </div>
                                 </div>
                             </div>
@@ -256,7 +287,7 @@
                     <div className="mb-6 flex justify-between items-center">
                         <div>
                             <h1 className="text-2xl font-bold text-pink-600 tracking-tight">Bomtoon TW 優儲計算機</h1>
-                            <div className="flex items-center gap-2 text-[10px] text-slate-500 font-bold">
+                            <div className="flex items-center gap-2 text-[10px] text-slate-500 font-bold mt-1">
                                 <span className="bg-pink-100 text-pink-600 px-1.5 py-0.5 rounded">TAIWAN TIME</span>
                                 {currentTime.toLocaleTimeString('en-GB')}
                             </div>
@@ -266,6 +297,22 @@
                                 <button key={c} onClick={() => setCurrency(c)} className={`px-4 py-1.5 text-xs font-black rounded-lg transition-all ${currency === c ? 'bg-pink-500 text-white shadow-md' : 'text-slate-400'}`}>{c}</button>
                             ))}
                         </div>
+                    </div>
+
+                    {/* 活動類型選單：頂部精緻導航條 */}
+                    <div className="mb-4 bg-slate-100 p-1 rounded-2xl flex border border-slate-200/50">
+                        <button 
+                            onClick={() => setPromoType('normal')} 
+                            className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 ${promoType === 'normal' ? 'bg-white text-pink-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        >
+                            <Icon name="calendar-days" size={14} /> 普通優儲
+                        </button>
+                        <button 
+                            onClick={() => setPromoType('special')} 
+                            className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 ${promoType === 'special' ? 'bg-white text-pink-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                        >
+                            <Icon name="sparkles" size={14} /> 666 限時快閃
+                        </button>
                     </div>
 
                     {activeTask && (
@@ -305,12 +352,20 @@
                         </div>
                     )}
 
+                    {/* 方案卡片展示：如果是666專屬日，單張卡片自動拉伸滿版，保持排版精美 */}
                     <div className="mb-6 grid grid-cols-2 gap-3">
                         {offerStats.map(o => {
                             const isBest = bestOffer?.id === o.id;
                             const isLocked = !isPromotionDay;
+                            const isSingleOffer = currentOffers.length === 1;
+
                             return (
-                                <div key={o.id} className={`relative p-3 rounded-2xl bg-white border-2 transition-all duration-300 ${o.isExpired ? 'opacity-40 grayscale border-transparent' : 'border-transparent shadow-sm hover:shadow-md'}`}>
+                                <div 
+                                    key={o.id} 
+                                    className={`relative p-3 rounded-2xl bg-white border-2 transition-all duration-300 ${
+                                        o.isExpired ? 'opacity-40 grayscale border-transparent' : 'border-transparent shadow-sm hover:shadow-md'
+                                    } ${isSingleOffer ? 'col-span-2' : ''}`}
+                                >
                                     {isBest && !o.isExpired && (
                                         <div className="absolute top-2 right-2 text-[8px] font-black text-pink-500 bg-pink-50 px-1.5 py-0.5 rounded-md uppercase tracking-tighter">最優惠</div>
                                     )}
@@ -347,23 +402,25 @@
                             {results && (
                                 <div className="mt-4 animate-in fade-in slide-in-from-top-2 duration-500">
                                     <MainResultCard res={currentDisplaySolution} />
-                                    <div className="mt-4 grid grid-cols-2 gap-3">
-                                        {selectedSolutionIdx !== null && (
-                                            <div onClick={() => setSelectedSolutionIdx(null)} className="p-3 bg-white rounded-2xl border-2 border-pink-200 shadow-sm cursor-pointer text-center">
-                                                <p className="text-[9px] font-bold text-pink-500 uppercase mb-1">← 返回推薦</p>
-                                                <p className="text-lg font-black text-pink-600">{results.best.totalC} C</p>
-                                            </div>
-                                        )}
-                                        {results.alternatives.map((alt, idx) => {
-                                            if (selectedSolutionIdx === idx) return null;
-                                            return (
-                                                <div key={idx} onClick={() => setSelectedSolutionIdx(idx)} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer text-center">
-                                                    <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">單儲 {alt.name}</p>
-                                                    <p className="text-lg font-black text-slate-600">{alt.totalC} C</p>
+                                    {results.alternatives.length > 1 && (
+                                        <div className="mt-4 grid grid-cols-2 gap-3">
+                                            {selectedSolutionIdx !== null && (
+                                                <div onClick={() => setSelectedSolutionIdx(null)} className="p-3 bg-white rounded-2xl border-2 border-pink-200 shadow-sm cursor-pointer text-center">
+                                                    <p className="text-[9px] font-bold text-pink-500 uppercase mb-1">← 返回推薦</p>
+                                                    <p className="text-lg font-black text-pink-600">{results.best.totalC} C</p>
                                                 </div>
-                                            );
-                                        })}
-                                    </div>
+                                            )}
+                                            {results.alternatives.map((alt, idx) => {
+                                                if (selectedSolutionIdx === idx) return null;
+                                                return (
+                                                    <div key={idx} onClick={() => setSelectedSolutionIdx(idx)} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer text-center">
+                                                        <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">單儲 {alt.name}</p>
+                                                        <p className="text-lg font-black text-slate-600">{alt.totalC} C</p>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
