@@ -14,7 +14,7 @@
     <!-- 引入 Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght=400;700;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700;900&display=swap');
         body { font-family: 'Noto Sans TC', sans-serif; }
         .transition-all-custom { transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
         @keyframes bounce-subtle {
@@ -58,16 +58,15 @@
             const [currentTime, setCurrentTime] = useState(getTaiwanTime());
             const [activeTask, setActiveTask] = useState(null);
 
-            // 優儲生效日期設定（包含今天 2026-06-02，提供測試功能）
-            const promotionDates = ["2026-04-02", "2026-06-02"]; // 已知日期
-            const nextPromotionDate = "2026-07-01"; 
+            // 優儲生效日期設定（包含 2026-06-02 及今天 2026-07-01 作為測試活動日）
+            const promotionDates = ["2026-04-02", "2026-06-02", "2026-07-01"]; 
 
             const isPromotionDay = useMemo(() => {
                 const y = currentTime.getFullYear();
                 const m = String(currentTime.getMonth() + 1).padStart(2, '0');
                 const d = String(currentTime.getDate()).padStart(2, '0');
                 const todayStr = `${y}-${m}-${d}`;
-                return promotionDates.includes(todayStr) || todayStr === nextPromotionDate;
+                return promotionDates.includes(todayStr);
             }, [currentTime]);
 
             useEffect(() => {
@@ -75,7 +74,7 @@
                 return () => clearInterval(timer);
             }, []);
 
-            // 切換活動類型、輸入金額或目標點數時，自動重置選擇的子方案與進行中的任務，防止跨方案衝突
+            // 切換活動類型、輸入金額或目標點數時，自動重置選擇的子方案，防止跨方案衝突
             useEffect(() => {
                 setSelectedSolutionIdx(null);
             }, [inputValue, targetC, promoType]);
@@ -84,7 +83,7 @@
                 setActiveTask(null);
             }, [promoType]);
 
-            // 所有方案定義（489/786 與 666 在數據源頭進行完全的組別隔離）
+            // 所有方案定義（普通優儲與 666 快閃）
             const allOffers = useMemo(() => ({
                 normal: [
                     { id: 'offerA', name: '489 方案', time: '全日限定', startTime: 0, endTime: 24, twd: 489, totalC: 180, baseC: 90, freeC: 90 },
@@ -95,13 +94,12 @@
                 ]
             }), []);
 
-            // 根據當前選擇的活動類型獲取方案，確保計算與顯示完全與另一組無關
+            // 根據當前選擇的活動類型獲取方案
             const currentOffers = useMemo(() => allOffers[promoType], [promoType, allOffers]);
 
             const isCurrentlyClickable = (offer) => {
                 if (!isPromotionDay) return false;
                 
-                // 額外驗證：點擊的方案必須屬於當前生效的活動類型
                 const isBelongingToActivePromo = currentOffers.some(o => o.id === offer.id);
                 if (!isBelongingToActivePromo) return false;
 
@@ -126,17 +124,124 @@
                 return { ...o, hkdCost, isAvailableNow, isExpired, costPerC };
             }), [currency, currentTime, exchangeRate, isPromotionDay, currentOffers]);
 
-            // 找出當前活動類型中最優惠的單一方案
+            // 找出當前活動類型中最優惠的單一方案 (僅用於標記 "最優惠" 小字)
             const bestOffer = useMemo(() => {
                 return [...offerStats].sort((a, b) => a.costPerC - b.costPerC)[0];
             }, [offerStats]);
 
-            // 嚴格單一方案計算邏輯（不進行任何跨方案、跨組別的混搭）
             const calculateAllResults = (mode, val) => {
                 if (!val || val <= 0) return null;
                 const budgetTWD = currency === 'HKD' ? val * exchangeRate : val;
 
-                // 僅使用目前已過濾的「活動方案」(offerStats) 進行個別計算
+                let bestCombined = null;
+
+                if (promoType === 'normal') {
+                    // 普通優儲：執行 489 與 786 混合最佳化搭配
+                    const oA = currentOffers[0]; // 489
+                    const oB = currentOffers[1]; // 786
+
+                    if (mode === 'budget') {
+                        let maxC = -1;
+                        let minCost = Infinity;
+                        let bestCountA = 0;
+                        let bestCountB = 0;
+
+                        const limitA = Math.floor(budgetTWD / oA.twd);
+                        for (let a = 0; a <= limitA; a++) {
+                            const remainingBudget = budgetTWD - (a * oA.twd);
+                            const limitB = Math.floor(remainingBudget / oB.twd);
+                            for (let b = 0; b <= limitB; b++) {
+                                const cost = a * oA.twd + b * oB.twd;
+                                const points = a * oA.totalC + b * oB.totalC;
+                                if (points > maxC || (points === maxC && cost < minCost)) {
+                                    maxC = points;
+                                    minCost = cost;
+                                    bestCountA = a;
+                                    bestCountB = b;
+                                }
+                            }
+                        }
+
+                        if (maxC > 0) {
+                            const items = [];
+                            if (bestCountA > 0) items.push({ id: oA.id, name: oA.name, count: bestCountA });
+                            if (bestCountB > 0) items.push({ id: oB.id, name: oB.name, count: bestCountB });
+
+                            bestCombined = {
+                                title: "最佳搭配推薦 (混合方案)",
+                                totalC: maxC,
+                                costTWD: minCost,
+                                actualCostHKD: minCost / exchangeRate,
+                                avgPrice: currency === 'HKD' ? ((minCost / exchangeRate) / maxC) : (minCost / maxC),
+                                itemList: items
+                            };
+                        }
+                    } else {
+                        // 目標點數模式
+                        let minCost = Infinity;
+                        let maxC = -1;
+                        let bestCountA = 0;
+                        let bestCountB = 0;
+
+                        const limitA = Math.ceil(val / oA.totalC);
+                        const limitB = Math.ceil(val / oB.totalC);
+
+                        for (let a = 0; a <= limitA; a++) {
+                            for (let b = 0; b <= limitB; b++) {
+                                const points = a * oA.totalC + b * oB.totalC;
+                                if (points >= val) {
+                                    const cost = a * oA.twd + b * oB.twd;
+                                    if (cost < minCost || (cost === minCost && points > maxC)) {
+                                        minCost = cost;
+                                        maxC = points;
+                                        bestCountA = a;
+                                        bestCountB = b;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (minCost !== Infinity) {
+                            const items = [];
+                            if (bestCountA > 0) items.push({ id: oA.id, name: oA.name, count: bestCountA });
+                            if (bestCountB > 0) items.push({ id: oB.id, name: oB.name, count: bestCountB });
+
+                            bestCombined = {
+                                title: "最省搭配推薦 (混合方案)",
+                                totalC: maxC,
+                                costTWD: minCost,
+                                actualCostHKD: minCost / exchangeRate,
+                                avgPrice: currency === 'HKD' ? ((minCost / exchangeRate) / maxC) : (minCost / maxC),
+                                itemList: items
+                            };
+                        }
+                    }
+                } else {
+                    // 666 快閃：只有單一 666 方案，無混搭空間
+                    const oC = currentOffers[0];
+                    let count = 0;
+                    if (mode === 'budget') {
+                        count = Math.floor(budgetTWD / oC.twd);
+                    } else {
+                        count = Math.ceil(val / oC.totalC);
+                    }
+
+                    if (count > 0) {
+                        const totalC = count * oC.totalC;
+                        const costTWD = count * oC.twd;
+                        const actualCostHKD = costTWD / exchangeRate;
+                        bestCombined = {
+                            title: mode === 'budget' ? "最佳推薦" : "最省推薦",
+                            totalC,
+                            costTWD,
+                            actualCostHKD,
+                            avgPrice: currency === 'HKD' ? (actualCostHKD / totalC) : (costTWD / totalC),
+                            itemList: [{ id: oC.id, name: oC.name, count }]
+                        };
+                    }
+                }
+
+                // 備用對比方案：提供純單儲 489 或 786 的個案比較
                 const alternatives = offerStats.map(o => {
                     let count = 0;
                     if (mode === 'budget') {
@@ -161,45 +266,16 @@
                         avgPrice,
                         itemList: [{ count, name: o.name, id: o.id }]
                     };
-                }).filter(res => res.count > 0); // 過濾掉不符預算或不需要的方案
+                }).filter(res => res.count > 0);
 
-                if (alternatives.length === 0) return null;
-
-                // 根據模式推薦最佳單一方案
-                let bestIdx = 0;
-                if (mode === 'budget') {
-                    // 預算模式：推薦能拿到最多點數的單一方案
-                    let maxC = -1;
-                    alternatives.forEach((alt, idx) => {
-                        if (alt.totalC > maxC) {
-                            maxC = alt.totalC;
-                            bestIdx = idx;
-                        }
-                    });
-                } else {
-                    // 目標點數模式：推薦花費最少的單一方案
-                    let minCost = Infinity;
-                    alternatives.forEach((alt, idx) => {
-                        if (alt.costTWD < minCost) {
-                            minCost = alt.costTWD;
-                            bestIdx = idx;
-                        }
-                    });
-                }
-
-                const best = {
-                    ...alternatives[bestIdx],
-                    title: mode === 'budget' ? "最佳推薦 (單一方案)" : "最省推薦 (單一方案)"
-                };
-
-                return { best, alternatives };
+                return { best: bestCombined, alternatives };
             };
 
             const results = useMemo(() => {
-                if (inputValue) return calculateAllResults('budget', inputValue);
-                if (targetC) return calculateAllResults('target', targetC);
+                if (inputValue) return calculateAllResults('budget', parseFloat(inputValue));
+                if (targetC) return calculateAllResults('target', parseFloat(targetC));
                 return null;
-            }, [inputValue, targetC, currency, exchangeRate, offerStats]);
+            }, [inputValue, targetC, currency, exchangeRate, offerStats, promoType]);
 
             const currentDisplaySolution = useMemo(() => {
                 if (!results) return null;
@@ -209,7 +285,8 @@
             const startTask = (res) => {
                 if (!isPromotionDay) return;
                 const items = res.itemList.map(it => {
-                    const o = currentOffers.find(off => off.id === it.id);
+                    // 從 allOffers 中找出最原始對應的 startTime / endTime 限制
+                    const o = [...allOffers.normal, ...allOffers.special].find(off => off.id === it.id);
                     return { ...it, total: it.count, remaining: it.count, perUnitC: o.totalC, startTime: o.startTime, endTime: o.endTime };
                 });
                 setActiveTask({ items, totalGoalC: res.totalC });
@@ -224,6 +301,7 @@
             };
 
             const currentTotalC = useMemo(() => activeTask?.items.reduce((acc, it) => acc + (it.total - it.remaining) * it.perUnitC, 0) || 0, [activeTask]);
+            const isAllCompleted = useMemo(() => activeTask?.items.length > 0 && activeTask.items.every(it => it.remaining === 0), [activeTask]);
 
             const MainResultCard = ({ res }) => {
                 if (!res) return null;
@@ -248,7 +326,7 @@
                                 </div>
                             </div>
                             <div className="text-right">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">實際支出</p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-black">實際支出</p>
                                 <p className="text-xl font-black text-slate-700">
                                     {currency === 'HKD' ? `$${(res.actualCostHKD || 0).toFixed(2)}` : `${res.costTWD || 0} TWD`}
                                 </p>
@@ -269,8 +347,8 @@
                                 <button disabled className="w-full bg-slate-200 text-slate-400 font-black py-4 rounded-2xl flex justify-center items-center gap-3 text-sm cursor-not-allowed">
                                     <Icon name="lock" size={20} /> 目前非優儲活動日
                                 </button>
-                                <p className="text-[10px] text-center text-orange-500 font-bold px-4">
-                                    請密切留意 BomtoonTW 官網/IG/Threads/X 公告下一次優儲日期方可解鎖執行功能。
+                                <p className="text-[10px] text-center text-orange-500 font-bold px-4 leading-relaxed">
+                                    請密切留意 BomtoonTW 官網公告下一次優儲日期方可解鎖執行功能。
                                 </p>
                             </div>
                         ) : (
@@ -284,6 +362,7 @@
 
             return (
                 <div className="min-h-screen p-4 pb-24 mx-auto max-w-md">
+                    {/* Header */}
                     <div className="mb-6 flex justify-between items-center">
                         <div>
                             <h1 className="text-2xl font-bold text-pink-600 tracking-tight">Bomtoon TW 優儲計算機</h1>
@@ -299,7 +378,7 @@
                         </div>
                     </div>
 
-                    {/* 活動類型選單：頂部精緻導航條 */}
+                    {/* 活動類型選單：頂部標籤 */}
                     <div className="mb-4 bg-slate-100 p-1 rounded-2xl flex border border-slate-200/50">
                         <button 
                             onClick={() => setPromoType('normal')} 
@@ -315,6 +394,7 @@
                         </button>
                     </div>
 
+                    {/* 任務追蹤面板 */}
                     {activeTask && (
                         <div className="mb-6 bg-slate-900 text-white p-5 rounded-3xl shadow-2xl border border-slate-700 animate-in zoom-in-95 duration-300">
                             <div className="flex justify-between mb-4">
@@ -348,11 +428,18 @@
                                         </div>
                                     );
                                 })}
+
+                                {isAllCompleted && (
+                                    <div className="mt-4 p-4 bg-green-500 text-white rounded-2xl text-center font-black flex justify-center items-center gap-2 animate-bounce-subtle shadow-lg shadow-green-500/20">
+                                        <Icon name="award" size={20} />
+                                        <span>儲夠啦！任務達成！</span>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}
 
-                    {/* 方案卡片展示：如果是666專屬日，單張卡片自動拉伸滿版，保持排版精美 */}
+                    {/* 方案卡片網格 */}
                     <div className="mb-6 grid grid-cols-2 gap-3">
                         {offerStats.map(o => {
                             const isBest = bestOffer?.id === o.id;
@@ -387,6 +474,7 @@
                         })}
                     </div>
 
+                    {/* 輸入與計算結果比較區 */}
                     <div className="space-y-4">
                         <div className="bg-white p-5 rounded-3xl shadow-sm border border-slate-100">
                             <div className="flex items-center gap-2 mb-4 text-pink-600 font-black text-sm uppercase tracking-widest"><Icon name="wallet" size={16} /> 預算/目標</div>
@@ -403,22 +491,40 @@
                                 <div className="mt-4 animate-in fade-in slide-in-from-top-2 duration-500">
                                     <MainResultCard res={currentDisplaySolution} />
                                     {results.alternatives.length > 1 && (
-                                        <div className="mt-4 grid grid-cols-2 gap-3">
-                                            {selectedSolutionIdx !== null && (
-                                                <div onClick={() => setSelectedSolutionIdx(null)} className="p-3 bg-white rounded-2xl border-2 border-pink-200 shadow-sm cursor-pointer text-center">
-                                                    <p className="text-[9px] font-bold text-pink-500 uppercase mb-1">← 返回推薦</p>
-                                                    <p className="text-lg font-black text-pink-600">{results.best.totalC} C</p>
-                                                </div>
-                                            )}
-                                            {results.alternatives.map((alt, idx) => {
-                                                if (selectedSolutionIdx === idx) return null;
-                                                return (
-                                                    <div key={idx} onClick={() => setSelectedSolutionIdx(idx)} className="p-3 bg-slate-50 rounded-2xl border border-slate-200 cursor-pointer text-center">
-                                                        <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">單儲 {alt.name}</p>
-                                                        <p className="text-lg font-black text-slate-600">{alt.totalC} C</p>
+                                        <div className="mt-4">
+                                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 ml-1">點擊下方卡片切換比較與差價</p>
+                                            <div className="grid grid-cols-2 gap-3">
+                                                {selectedSolutionIdx !== null && (
+                                                    <div onClick={() => setSelectedSolutionIdx(null)} className="p-3 bg-white rounded-2xl border-2 border-pink-200 shadow-sm cursor-pointer text-center hover:border-pink-300 transition-all">
+                                                        <p className="text-[9px] font-bold text-pink-500 uppercase mb-1">← 返回最佳推薦</p>
+                                                        <p className="text-lg font-black text-pink-600 leading-tight">{results.best.totalC} C</p>
+                                                        <p className="text-[9px] font-bold text-pink-400 mt-1">均價: {currency} {results.best.avgPrice.toFixed(3)}</p>
                                                     </div>
-                                                );
-                                            })}
+                                                )}
+                                                {results.alternatives.map((alt, idx) => {
+                                                    if (selectedSolutionIdx === idx) return null;
+                                                    
+                                                    // 計算與最優搭配推薦方案的點數與支出差異
+                                                    const diffC = results.best.totalC - alt.totalC;
+                                                    const diffCostTWD = alt.costTWD - results.best.costTWD;
+                                                    const diffCostHKD = alt.actualCostHKD - results.best.actualCostHKD;
+                                                    const diffCostDisplay = currency === 'HKD' ? `$${diffCostHKD.toFixed(1)}` : `${diffCostTWD.toFixed(0)} TWD`;
+
+                                                    return (
+                                                        <div key={idx} onClick={() => setSelectedSolutionIdx(idx)} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl border border-slate-200 cursor-pointer text-center transition-all duration-200">
+                                                            <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">單儲 {alt.name}</p>
+                                                            <p className="text-lg font-black text-slate-600 leading-tight">{alt.totalC} C</p>
+                                                            <p className="text-[9px] font-bold text-slate-500 mt-1">均價: {currency} {alt.avgPrice.toFixed(3)}</p>
+                                                            {inputValue && diffC > 0 && (
+                                                                <p className="text-[8px] text-red-400 font-bold mt-1 leading-none">(少 {diffC} C)</p>
+                                                            )}
+                                                            {targetC && diffCostTWD > 0 && (
+                                                                <p className="text-[8px] text-red-400 font-bold mt-1 leading-none">(貴 {diffCostDisplay})</p>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -429,7 +535,7 @@
                     <div className="mt-8 px-4 text-center">
                         <p className="text-[10px] text-slate-400 font-bold leading-relaxed tracking-tight">
                             💡 提示：非優儲活動日時，系統僅提供計算功能。<br/>
-                            請隨時注意 BomtoonTW 官方公告解鎖時間。
+                            混合搭配推薦會自動算出最佳化的 CP 值儲值路徑。
                         </p>
                     </div>
                 </div>
