@@ -49,6 +49,10 @@
             // 活動類型切換：'normal' (489+786) 或 'special' (666)
             const [promoType, setPromoType] = useState('normal');
 
+            // 5周年限定方案開關與展開面板
+            const [isAnniversary, setIsAnniversary] = useState(false);
+            const [showAnniversaryPanel, setShowAnniversaryPanel] = useState(false);
+
             const getTaiwanTime = () => {
                 const now = new Date();
                 const tzString = now.toLocaleString('en-US', { timeZone: 'Asia/Taipei' });
@@ -58,8 +62,8 @@
             const [currentTime, setCurrentTime] = useState(getTaiwanTime());
             const [activeTask, setActiveTask] = useState(null);
 
-            // 優儲生效日期設定（包含 2026-06-02 及今天 2026-07-01 作為測試活動日）
-            const promotionDates = ["2026-04-02", "2026-06-02", "2026-07-01", "2026-08-01"]; 
+            // 優儲生效日期設定
+            const promotionDates = ["2026-04-02", "2026-06-02", "2026-07-01", "2026-09-03"]; 
 
             const isPromotionDay = useMemo(() => {
                 const y = currentTime.getFullYear();
@@ -74,16 +78,16 @@
                 return () => clearInterval(timer);
             }, []);
 
-            // 切換活動類型、輸入金額或目標點數時，自動重置選擇的子方案，防止跨方案衝突
+            // 重置子方案選擇
             useEffect(() => {
                 setSelectedSolutionIdx(null);
-            }, [inputValue, targetC, promoType]);
+            }, [inputValue, targetC, promoType, isAnniversary]);
 
             useEffect(() => {
                 setActiveTask(null);
             }, [promoType]);
 
-            // 所有方案定義（普通優儲與 666 快閃）
+            // 方案定義
             const allOffers = useMemo(() => ({
                 normal: [
                     { id: 'offerA', name: '489 方案', time: '全日限定', startTime: 0, endTime: 24, twd: 489, totalC: 180, baseC: 90, freeC: 90 },
@@ -94,7 +98,6 @@
                 ]
             }), []);
 
-            // 根據當前選擇的活動類型獲取方案
             const currentOffers = useMemo(() => allOffers[promoType], [promoType, allOffers]);
 
             const isCurrentlyClickable = (offer) => {
@@ -116,15 +119,25 @@
                 return (hours + minutes / 60) < offer.endTime;
             };
 
+            // 每筆購買額外加贈點數（5週年限定模式下每筆489/786加500P，200P=1C）
+            const bonusPointsPerPurchase = useMemo(() => {
+                return (isAnniversary && promoType === 'normal') ? 500 : 0;
+            }, [isAnniversary, promoType]);
+
             const offerStats = useMemo(() => currentOffers.map(o => {
                 const hkdCost = o.twd / exchangeRate;
                 const isAvailableNow = isCurrentlyClickable(o);
                 const isExpired = isPromotionDay && !isNotExpiredYet(o);
-                const costPerC = currency === 'HKD' ? (hkdCost / o.totalC) : (o.twd / o.totalC);
-                return { ...o, hkdCost, isAvailableNow, isExpired, costPerC };
-            }), [currency, currentTime, exchangeRate, isPromotionDay, currentOffers]);
 
-            // 找出當前活動類型中最優惠的單一方案 (僅用於標記 "最優惠" 小字)
+                // 計算包含 5週年 500P (等同 2.5C) 的綜合算力
+                const bonusP = bonusPointsPerPurchase;
+                const bonusCFromP = bonusP / 200; 
+                const totalEffectiveC = o.totalC + bonusCFromP;
+
+                const costPerC = currency === 'HKD' ? (hkdCost / totalEffectiveC) : (o.twd / totalEffectiveC);
+                return { ...o, hkdCost, isAvailableNow, isExpired, costPerC, bonusP, bonusCFromP, totalEffectiveC };
+            }), [currency, currentTime, exchangeRate, isPromotionDay, currentOffers, bonusPointsPerPurchase]);
+
             const bestOffer = useMemo(() => {
                 return [...offerStats].sort((a, b) => a.costPerC - b.costPerC)[0];
             }, [offerStats]);
@@ -136,12 +149,17 @@
                 let bestCombined = null;
 
                 if (promoType === 'normal') {
-                    // 普通優儲：執行 489 與 786 混合最佳化搭配
                     const oA = currentOffers[0]; // 489
                     const oB = currentOffers[1]; // 786
 
+                    // 單次獲得的有效C（包含500P折算之 2.5C）
+                    const effCA = oA.totalC + (bonusPointsPerPurchase / 200);
+                    const effCB = oB.totalC + (bonusPointsPerPurchase / 200);
+
                     if (mode === 'budget') {
-                        let maxC = -1;
+                        let maxEffC = -1;
+                        let maxDirectC = 0;
+                        let maxP = 0;
                         let minCost = Infinity;
                         let bestCountA = 0;
                         let bestCountB = 0;
@@ -152,9 +170,14 @@
                             const limitB = Math.floor(remainingBudget / oB.twd);
                             for (let b = 0; b <= limitB; b++) {
                                 const cost = a * oA.twd + b * oB.twd;
-                                const points = a * oA.totalC + b * oB.totalC;
-                                if (points > maxC || (points === maxC && cost < minCost)) {
-                                    maxC = points;
+                                const directPoints = a * oA.totalC + b * oB.totalC;
+                                const pointsP = (a + b) * bonusPointsPerPurchase;
+                                const totalEffectivePoints = directPoints + (pointsP / 200);
+
+                                if (totalEffectivePoints > maxEffC || (totalEffectivePoints === maxEffC && cost < minCost)) {
+                                    maxEffC = totalEffectivePoints;
+                                    maxDirectC = directPoints;
+                                    maxP = pointsP;
                                     minCost = cost;
                                     bestCountA = a;
                                     bestCountB = b;
@@ -162,38 +185,48 @@
                             }
                         }
 
-                        if (maxC > 0) {
+                        if (maxEffC > 0) {
                             const items = [];
                             if (bestCountA > 0) items.push({ id: oA.id, name: oA.name, count: bestCountA });
                             if (bestCountB > 0) items.push({ id: oB.id, name: oB.name, count: bestCountB });
 
                             bestCombined = {
-                                title: "最佳搭配推薦 (混合方案)",
-                                totalC: maxC,
+                                title: isAnniversary ? "5週年最佳搭配推薦" : "最佳搭配推薦 (混合方案)",
+                                totalC: maxDirectC,
+                                totalP: maxP,
+                                extraCFromP: maxP / 200,
+                                totalEffectiveC: maxEffC,
                                 costTWD: minCost,
                                 actualCostHKD: minCost / exchangeRate,
-                                avgPrice: currency === 'HKD' ? ((minCost / exchangeRate) / maxC) : (minCost / maxC),
+                                avgPrice: currency === 'HKD' ? ((minCost / exchangeRate) / maxEffC) : (minCost / maxEffC),
                                 itemList: items
                             };
                         }
                     } else {
                         // 目標點數模式
                         let minCost = Infinity;
-                        let maxC = -1;
+                        let maxEffC = -1;
+                        let maxDirectC = 0;
+                        let maxP = 0;
                         let bestCountA = 0;
                         let bestCountB = 0;
 
-                        const limitA = Math.ceil(val / oA.totalC);
-                        const limitB = Math.ceil(val / oB.totalC);
+                        const limitA = Math.ceil(val / effCA);
+                        const limitB = Math.ceil(val / effCB);
 
                         for (let a = 0; a <= limitA; a++) {
                             for (let b = 0; b <= limitB; b++) {
-                                const points = a * oA.totalC + b * oB.totalC;
-                                if (points >= val) {
+                                const directPoints = a * oA.totalC + b * oB.totalC;
+                                const pointsP = (a + b) * bonusPointsPerPurchase;
+                                const totalEffectivePoints = directPoints + (pointsP / 200);
+
+                                if (totalEffectivePoints >= val) {
                                     const cost = a * oA.twd + b * oB.twd;
-                                    if (cost < minCost || (cost === minCost && points > maxC)) {
+                                    if (cost < minCost || (cost === minCost && totalEffectivePoints > maxEffC)) {
                                         minCost = cost;
-                                        maxC = points;
+                                        maxEffC = totalEffectivePoints;
+                                        maxDirectC = directPoints;
+                                        maxP = pointsP;
                                         bestCountA = a;
                                         bestCountB = b;
                                     }
@@ -207,24 +240,22 @@
                             if (bestCountB > 0) items.push({ id: oB.id, name: oB.name, count: bestCountB });
 
                             bestCombined = {
-                                title: "最省搭配推薦 (混合方案)",
-                                totalC: maxC,
+                                title: isAnniversary ? "5週年最省搭配推薦" : "最省搭配推薦 (混合方案)",
+                                totalC: maxDirectC,
+                                totalP: maxP,
+                                extraCFromP: maxP / 200,
+                                totalEffectiveC: maxEffC,
                                 costTWD: minCost,
                                 actualCostHKD: minCost / exchangeRate,
-                                avgPrice: currency === 'HKD' ? ((minCost / exchangeRate) / maxC) : (minCost / maxC),
+                                avgPrice: currency === 'HKD' ? ((minCost / exchangeRate) / maxEffC) : (minCost / maxEffC),
                                 itemList: items
                             };
                         }
                     }
                 } else {
-                    // 666 快閃：只有單一 666 方案，無混搭空間
+                    // 666 快閃模式
                     const oC = currentOffers[0];
-                    let count = 0;
-                    if (mode === 'budget') {
-                        count = Math.floor(budgetTWD / oC.twd);
-                    } else {
-                        count = Math.ceil(val / oC.totalC);
-                    }
+                    let count = mode === 'budget' ? Math.floor(budgetTWD / oC.twd) : Math.ceil(val / oC.totalC);
 
                     if (count > 0) {
                         const totalC = count * oC.totalC;
@@ -233,6 +264,9 @@
                         bestCombined = {
                             title: mode === 'budget' ? "最佳推薦" : "最省推薦",
                             totalC,
+                            totalP: 0,
+                            extraCFromP: 0,
+                            totalEffectiveC: totalC,
                             costTWD,
                             actualCostHKD,
                             avgPrice: currency === 'HKD' ? (actualCostHKD / totalC) : (costTWD / totalC),
@@ -241,19 +275,19 @@
                     }
                 }
 
-                // 備用對比方案：提供純單儲 489 或 786 的個案比較
+                // 備用單儲對比方案
                 const alternatives = offerStats.map(o => {
-                    let count = 0;
-                    if (mode === 'budget') {
-                        count = Math.floor(budgetTWD / o.twd);
-                    } else {
-                        count = Math.ceil(val / o.totalC);
-                    }
+                    const effCPerUnit = o.totalC + (o.bonusP / 200);
+                    let count = mode === 'budget' ? Math.floor(budgetTWD / o.twd) : Math.ceil(val / effCPerUnit);
 
                     const totalC = count * o.totalC;
+                    const totalP = count * o.bonusP;
+                    const extraCFromP = totalP / 200;
+                    const totalEffectiveC = totalC + extraCFromP;
+
                     const costTWD = count * o.twd;
                     const actualCostHKD = costTWD / exchangeRate;
-                    const avgPrice = currency === 'HKD' ? (actualCostHKD / totalC) : (costTWD / totalC);
+                    const avgPrice = currency === 'HKD' ? (actualCostHKD / (totalEffectiveC || 1)) : (costTWD / (totalEffectiveC || 1));
 
                     return {
                         id: o.id,
@@ -261,6 +295,9 @@
                         name: o.name,
                         count,
                         totalC,
+                        totalP,
+                        extraCFromP,
+                        totalEffectiveC,
                         costTWD,
                         actualCostHKD,
                         avgPrice,
@@ -275,7 +312,7 @@
                 if (inputValue) return calculateAllResults('budget', parseFloat(inputValue));
                 if (targetC) return calculateAllResults('target', parseFloat(targetC));
                 return null;
-            }, [inputValue, targetC, currency, exchangeRate, offerStats, promoType]);
+            }, [inputValue, targetC, currency, exchangeRate, offerStats, promoType, isAnniversary]);
 
             const currentDisplaySolution = useMemo(() => {
                 if (!results) return null;
@@ -285,11 +322,18 @@
             const startTask = (res) => {
                 if (!isPromotionDay) return;
                 const items = res.itemList.map(it => {
-                    // 從 allOffers 中找出最原始對應的 startTime / endTime 限制
                     const o = [...allOffers.normal, ...allOffers.special].find(off => off.id === it.id);
-                    return { ...it, total: it.count, remaining: it.count, perUnitC: o.totalC, startTime: o.startTime, endTime: o.endTime };
+                    return { 
+                        ...it, 
+                        total: it.count, 
+                        remaining: it.count, 
+                        perUnitC: o.totalC, 
+                        perUnitP: isAnniversary && promoType === 'normal' ? 500 : 0,
+                        startTime: o.startTime, 
+                        endTime: o.endTime 
+                    };
                 });
-                setActiveTask({ items, totalGoalC: res.totalC });
+                setActiveTask({ items, totalGoalC: res.totalC, totalGoalP: res.totalP || 0, totalEffectiveC: res.totalEffectiveC });
                 window.scrollTo({ top: 0, behavior: 'smooth' });
             };
 
@@ -301,32 +345,44 @@
             };
 
             const currentTotalC = useMemo(() => activeTask?.items.reduce((acc, it) => acc + (it.total - it.remaining) * it.perUnitC, 0) || 0, [activeTask]);
+            const currentTotalP = useMemo(() => activeTask?.items.reduce((acc, it) => acc + (it.total - it.remaining) * it.perUnitP, 0) || 0, [activeTask]);
             const isAllCompleted = useMemo(() => activeTask?.items.length > 0 && activeTask.items.every(it => it.remaining === 0), [activeTask]);
 
             const MainResultCard = ({ res }) => {
                 if (!res) return null;
                 const isAlternative = selectedSolutionIdx !== null;
+                const hasP = res.totalP > 0;
 
                 return (
                     <div className="mt-4 p-4 bg-pink-50/50 rounded-2xl border border-pink-200 shadow-sm transition-all-custom">
                         <div className="flex justify-between items-start mb-4">
                             <div>
-                                <p className="text-[10px] font-bold text-pink-400 uppercase tracking-widest flex items-center gap-1">
+                                <p className="text-[10px] font-bold text-pink-500 uppercase tracking-widest flex items-center gap-1">
                                     <Icon name={isAlternative ? "layers" : "sparkles"} size={10} />
                                     {res.title}
                                 </p>
-                                <div className="flex items-baseline gap-1">
+                                <div className="flex items-baseline gap-1.5 flex-wrap">
                                     <span className="text-3xl font-black text-pink-600">{res.totalC}</span>
                                     <span className="text-xs font-bold text-pink-400 uppercase tracking-tighter">C</span>
+                                    {hasP && (
+                                        <span className="text-xs font-black text-purple-600 bg-purple-100 px-2 py-0.5 rounded-full border border-purple-200">
+                                            + {res.totalP} P
+                                        </span>
+                                    )}
                                 </div>
+                                {hasP && (
+                                    <p className="text-[10px] font-bold text-purple-600 mt-1">
+                                        💡 積分折算：{res.totalP}P = {res.extraCFromP}C (總等值 <span className="font-black text-pink-600">{res.totalEffectiveC} C</span>)
+                                    </p>
+                                )}
                                 <div className="mt-1 flex flex-col gap-1">
                                     <div className="px-2 py-0.5 bg-pink-100/50 border border-pink-200 rounded text-[10px] font-bold text-pink-500 inline-block">
-                                        均價：{currency} {res.avgPrice ? res.avgPrice.toFixed(3) : "0.000"}/C
+                                        均價：{currency} {res.avgPrice ? res.avgPrice.toFixed(3) : "0.000"}/{hasP ? '等值C' : 'C'}
                                     </div>
                                 </div>
                             </div>
                             <div className="text-right">
-                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest font-black">實際支出</p>
+                                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">實際支出</p>
                                 <p className="text-xl font-black text-slate-700">
                                     {currency === 'HKD' ? `$${(res.actualCostHKD || 0).toFixed(2)}` : `${res.costTWD || 0} TWD`}
                                 </p>
@@ -336,7 +392,12 @@
                         <div className="space-y-2 mb-4">
                             {res.itemList.map((it, i) => (
                                 <div key={i} className="flex justify-between items-center bg-white/80 px-3 py-2 rounded-xl text-sm font-bold border border-white shadow-sm">
-                                    <span className="text-slate-600">{it.name}</span>
+                                    <div className="flex items-center gap-1.5">
+                                        <span className="text-slate-600">{it.name}</span>
+                                        {isAnniversary && promoType === 'normal' && (
+                                            <span className="text-[9px] font-black text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-200">+500P</span>
+                                        )}
+                                    </div>
                                     <span className="text-pink-500 bg-pink-50 px-2 py-0.5 rounded-lg">x {it.count} 次</span>
                                 </div>
                             ))}
@@ -378,8 +439,8 @@
                         </div>
                     </div>
 
-                    {/* 活動類型選單：頂部標籤 */}
-                    <div className="mb-4 bg-slate-100 p-1 rounded-2xl flex border border-slate-200/50">
+                    {/* 活動類型選單標籤 */}
+                    <div className="mb-3 bg-slate-100 p-1 rounded-2xl flex border border-slate-200/50">
                         <button 
                             onClick={() => setPromoType('normal')} 
                             className={`flex-1 py-2.5 text-xs font-bold rounded-xl transition-all flex items-center justify-center gap-1.5 ${promoType === 'normal' ? 'bg-white text-pink-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
@@ -394,6 +455,50 @@
                         </button>
                     </div>
 
+                    {/* 可折疊之「5週年限定」儲值方案模組 */}
+                    {promoType === 'normal' && (
+                        <div className="mb-4 bg-gradient-to-r from-purple-500/10 via-pink-500/10 to-amber-500/10 rounded-2xl border border-purple-200/60 p-3 transition-all">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <span className="p-1.5 bg-purple-600 text-white rounded-lg font-black text-xs">
+                                        <Icon name="gift" size={14} />
+                                    </span>
+                                    <div>
+                                        <div className="text-xs font-black text-purple-900 flex items-center gap-1">
+                                            5 週年限定加碼
+                                            <span className="text-[9px] bg-purple-200 text-purple-800 px-1.5 py-0.2 rounded-full font-bold">+500P/次</span>
+                                        </div>
+                                        <div className="text-[10px] text-purple-600 font-bold">每 200P 積分 = 1C (自動併入算力)</div>
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button 
+                                        onClick={() => setIsAnniversary(!isAnniversary)} 
+                                        className={`relative w-12 h-6 rounded-full transition-colors p-0.5 ${isAnniversary ? 'bg-purple-600' : 'bg-slate-300'}`}
+                                    >
+                                        <div className={`w-5 h-5 bg-white rounded-full shadow-md transform transition-transform ${isAnniversary ? 'translate-x-6' : 'translate-x-0'}`} />
+                                    </button>
+                                    <button 
+                                        onClick={() => setShowAnniversaryPanel(!showAnniversaryPanel)} 
+                                        className="text-purple-400 hover:text-purple-700 transition-colors p-1"
+                                        title="規則說明"
+                                    >
+                                        <Icon name={showAnniversaryPanel ? "chevron-up" : "chevron-down"} size={16} />
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* 可展開的詳細說明 */}
+                            {showAnniversaryPanel && (
+                                <div className="mt-3 pt-3 border-t border-purple-200/40 text-[10px] text-purple-800 space-y-1 animate-in fade-in duration-200">
+                                    <p className="font-bold flex items-center gap-1">✨ 5週年專屬算力機制：</p>
+                                    <p>・開啟後，每一次儲值 489 或 786 方案皆加贈 <b>500P 積分</b>。</p>
+                                    <p>・系統會按官方匯率 <b>200P = 1C</b>（即每次加贈 2.5C 算力）自動計算最省錢且最多 C+P 的最佳混搭。</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* 任務追蹤面板 */}
                     {activeTask && (
                         <div className="mb-6 bg-slate-900 text-white p-5 rounded-3xl shadow-2xl border border-slate-700 animate-in zoom-in-95 duration-300">
@@ -402,10 +507,15 @@
                                 <button onClick={() => setActiveTask(null)} className="text-slate-500 hover:text-white transition-colors"><Icon name="x-circle" size={20} /></button>
                             </div>
                             <div className="mb-5 bg-slate-800/50 p-4 rounded-2xl text-center border border-slate-700/30">
-                                <div className="text-[10px] text-slate-400 uppercase tracking-widest mb-1">進度：{currentTotalC} / {activeTask.totalGoalC} C</div>
-                                <div className="text-3xl font-black tabular-nums">{currentTotalC} <span className="text-slate-500 text-xs">C</span></div>
+                                <div className="text-[10px] text-slate-400 uppercase tracking-widest mb-1">直存 C 進度：{currentTotalC} / {activeTask.totalGoalC} C</div>
+                                <div className="text-3xl font-black tabular-nums">
+                                    {currentTotalC} <span className="text-slate-500 text-xs">C</span>
+                                    {activeTask.totalGoalP > 0 && (
+                                        <span className="text-purple-400 text-sm font-bold ml-2">+ {currentTotalP} P</span>
+                                    )}
+                                </div>
                                 <div className="mt-3 h-2.5 bg-slate-800 rounded-full overflow-hidden">
-                                    <div className="h-full bg-gradient-to-r from-pink-600 to-pink-400 transition-all duration-1000 shadow-[0_0_10px_rgba(219,39,119,0.5)]" style={{ width: `${(currentTotalC/activeTask.totalGoalC)*100}%` }} />
+                                    <div className="h-full bg-gradient-to-r from-pink-600 to-purple-500 transition-all duration-1000 shadow-[0_0_10px_rgba(219,39,119,0.5)]" style={{ width: `${(currentTotalC/activeTask.totalGoalC)*100}%` }} />
                                 </div>
                             </div>
                             <div className="space-y-3">
@@ -460,14 +570,22 @@
                                         <Icon name={o.isAvailableNow ? "clock" : "lock"} size={10} className={o.isAvailableNow ? "text-pink-500" : "text-slate-400"} />
                                         {o.time}
                                     </div>
-                                    <div className="text-xs font-bold text-slate-500">{o.name}</div>
-                                    <div className="flex items-baseline gap-1 my-1">
+                                    <div className="text-xs font-bold text-slate-500 flex items-center justify-center gap-1">
+                                        {o.name}
+                                        {o.bonusP > 0 && <span className="text-[9px] bg-purple-100 text-purple-700 px-1 rounded font-black">+500P</span>}
+                                    </div>
+                                    <div className="flex items-baseline justify-center gap-1 my-1">
                                         <div className="text-2xl font-black leading-none">{o.totalC} <span className="text-[10px] font-normal text-slate-400 tracking-tighter">C</span></div>
                                         <div className="text-[8px] text-pink-400 font-bold leading-none truncate">(含 {o.freeC} 免費)</div>
                                     </div>
+                                    {o.bonusP > 0 && (
+                                        <div className="text-[9px] text-purple-600 font-bold text-center mb-1">
+                                            + {o.bonusP}P 積分 (= {o.bonusCFromP}C)
+                                        </div>
+                                    )}
                                     <div className={`text-[10px] font-black py-1.5 rounded-lg text-center flex flex-col items-center justify-center gap-0.5 ${o.isAvailableNow ? 'bg-pink-50 text-pink-600' : 'bg-slate-100 text-slate-400'}`}>
                                         <span>{isLocked ? '等待公告日期' : (o.isExpired ? '今日已完' : (o.isAvailableNow ? '已開賣' : '待解鎖'))}</span>
-                                        <span className="text-[8px] opacity-70">{currency}: {o.costPerC.toFixed(3)}/C</span>
+                                        <span className="text-[8px] opacity-70">{currency}: {o.costPerC.toFixed(3)}/{o.bonusP > 0 ? '等值C' : 'C'}</span>
                                     </div>
                                 </div>
                             );
@@ -497,15 +615,14 @@
                                                 {selectedSolutionIdx !== null && (
                                                     <div onClick={() => setSelectedSolutionIdx(null)} className="p-3 bg-white rounded-2xl border-2 border-pink-200 shadow-sm cursor-pointer text-center hover:border-pink-300 transition-all">
                                                         <p className="text-[9px] font-bold text-pink-500 uppercase mb-1">← 返回最佳推薦</p>
-                                                        <p className="text-lg font-black text-pink-600 leading-tight">{results.best.totalC} C</p>
+                                                        <p className="text-lg font-black text-pink-600 leading-tight">{results.best.totalEffectiveC} C</p>
                                                         <p className="text-[9px] font-bold text-pink-400 mt-1">均價: {currency} {results.best.avgPrice.toFixed(3)}</p>
                                                     </div>
                                                 )}
                                                 {results.alternatives.map((alt, idx) => {
                                                     if (selectedSolutionIdx === idx) return null;
                                                     
-                                                    // 計算與最優搭配推薦方案的點數與支出差異
-                                                    const diffC = results.best.totalC - alt.totalC;
+                                                    const diffC = results.best.totalEffectiveC - alt.totalEffectiveC;
                                                     const diffCostTWD = alt.costTWD - results.best.costTWD;
                                                     const diffCostHKD = alt.actualCostHKD - results.best.actualCostHKD;
                                                     const diffCostDisplay = currency === 'HKD' ? `$${diffCostHKD.toFixed(1)}` : `${diffCostTWD.toFixed(0)} TWD`;
@@ -513,7 +630,10 @@
                                                     return (
                                                         <div key={idx} onClick={() => setSelectedSolutionIdx(idx)} className="p-3 bg-slate-50 hover:bg-slate-100 rounded-2xl border border-slate-200 cursor-pointer text-center transition-all duration-200">
                                                             <p className="text-[9px] font-bold text-slate-400 uppercase mb-1">單儲 {alt.name}</p>
-                                                            <p className="text-lg font-black text-slate-600 leading-tight">{alt.totalC} C</p>
+                                                            <p className="text-lg font-black text-slate-600 leading-tight">{alt.totalEffectiveC} C</p>
+                                                            {alt.totalP > 0 && (
+                                                                <p className="text-[8px] font-bold text-purple-600">(含 {alt.totalP}P)</p>
+                                                            )}
                                                             <p className="text-[9px] font-bold text-slate-500 mt-1">均價: {currency} {alt.avgPrice.toFixed(3)}</p>
                                                             {inputValue && diffC > 0 && (
                                                                 <p className="text-[8px] text-red-400 font-bold mt-1 leading-none">(少 {diffC} C)</p>
